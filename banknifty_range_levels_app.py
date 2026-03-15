@@ -4,7 +4,7 @@ import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="5-Week Instrument Levels", layout="wide")
+st.set_page_config(page_title="Range Instrument Levels", layout="wide")
 
 
 # -----------------------------
@@ -48,7 +48,7 @@ DEFAULT_INSTRUMENTS = {
 # Helpers
 # -----------------------------
 def digit_sum_reduce(n: int) -> int:
-    """Reduce a number by repeatedly summing digits until one digit remains."""
+    """Reduce number by repeated digit sum until one digit remains."""
     n = abs(int(n))
     while n >= 10:
         n = sum(int(d) for d in str(n))
@@ -56,7 +56,7 @@ def digit_sum_reduce(n: int) -> int:
 
 
 def normalize_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Handle yfinance single-ticker MultiIndex columns safely."""
+    """Handle possible MultiIndex columns from yfinance."""
     if isinstance(df.columns, pd.MultiIndex):
         level0 = list(df.columns.get_level_values(0))
         level1 = list(df.columns.get_level_values(1))
@@ -74,15 +74,11 @@ def normalize_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def format_date_ddmmyyyy(value) -> str:
-    return pd.to_datetime(value).strftime("%d/%m/%Y")
-
-
 @st.cache_data(ttl=300)
 def fetch_instrument_daily(symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
     """
     Fetch daily candles for the selected instrument.
-    yfinance end behaves effectively like exclusive, so add 1 day.
+    End gets +1 day because yfinance end is effectively exclusive.
     """
     df = yf.download(
         symbol,
@@ -107,36 +103,20 @@ def fetch_instrument_daily(symbol: str, start_date: date, end_date: date) -> pd.
 
     df = df[required].copy().dropna()
     df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
     return df
 
 
-def build_monday_to_friday_weeks(daily_df: pd.DataFrame) -> pd.DataFrame:
+def calculate_levels_from_date_range(range_df: pd.DataFrame) -> dict:
     """
-    Convert daily candles into Monday-Friday trading weeks.
-    W-FRI means each weekly bar ends on Friday and contains Mon->Fri data.
+    New logic:
+    - highest high from all dates in range
+    - lowest low from all dates in range
+    - close of the end date (practically: last available trading day's close in range)
     """
-    weekly = daily_df.resample("W-FRI").agg(
-        {
-            "Open": "first",
-            "High": "max",
-            "Low": "min",
-            "Close": "last",
-            "Volume": "sum",
-        }
-    )
-
-    # Keep reasonably complete weeks only
-    counts = daily_df["Close"].resample("W-FRI").count()
-    weekly["days_count"] = counts
-    weekly = weekly[weekly["days_count"] >= 4].drop(columns=["days_count"])
-
-    return weekly.dropna()
-
-
-def calculate_levels_from_5_weeks(weekly_5: pd.DataFrame) -> dict:
-    five_week_high = int(weekly_5["High"].max())
-    five_week_low = int(weekly_5["Low"].min())
-    main_number = five_week_high - five_week_low
+    highest_high = int(range_df["High"].max())
+    lowest_low = int(range_df["Low"].min())
+    main_number = highest_high - lowest_low
 
     reduced_digit = digit_sum_reduce(main_number)
     if reduced_digit == 0:
@@ -144,25 +124,27 @@ def calculate_levels_from_5_weeks(weekly_5: pd.DataFrame) -> dict:
 
     derived_number = main_number // reduced_digit
 
-    last_week = weekly_5.iloc[-1]
-    last_week_close = int(last_week["Close"])
-    last_week_high = int(last_week["High"])
-    last_week_low = int(last_week["Low"])
+    last_row = range_df.iloc[-1]
+    close_used = int(last_row["Close"])
+    high_used = int(last_row["High"])
+    low_used = int(last_row["Low"])
+    close_date_used = pd.to_datetime(range_df.index[-1]).strftime("%d/%m/%Y")
 
-    upper_point = last_week_close + derived_number
-    lower_point = last_week_close - derived_number
-    buying_point = last_week_high - derived_number
-    selling_point = last_week_low - derived_number
+    upper_point = close_used + derived_number
+    lower_point = close_used - derived_number
+    buying_point = high_used - derived_number
+    selling_point = low_used - derived_number
 
     return {
-        "five_week_high": five_week_high,
-        "five_week_low": five_week_low,
+        "highest_high": highest_high,
+        "lowest_low": lowest_low,
         "main_number": main_number,
         "reduced_digit": reduced_digit,
         "derived_number": derived_number,
-        "last_week_close": last_week_close,
-        "last_week_high": last_week_high,
-        "last_week_low": last_week_low,
+        "close_used": close_used,
+        "high_used": high_used,
+        "low_used": low_used,
+        "close_date_used": close_date_used,
         "upper_point": upper_point,
         "lower_point": lower_point,
         "buying_point": buying_point,
@@ -173,16 +155,16 @@ def calculate_levels_from_5_weeks(weekly_5: pd.DataFrame) -> dict:
 # -----------------------------
 # UI
 # -----------------------------
-st.title("5-Week Instrument Range Calculator")
+st.title("Instrument Range Calculator")
 st.caption(
-    "Choose an instrument and date range, fetch live data, and calculate Upper, Buying, Close Used, Lower, and Selling points from the last 5 completed weeks inside that range."
+    "Choose an instrument and date range. The app takes the highest high and lowest low from all dates in that range, uses the close of the end-date trading candle, and calculates the levels."
 )
 
 with st.sidebar:
     st.header("Inputs")
     today = date.today()
     default_end = today
-    default_start = today - timedelta(days=140)
+    default_start = today - timedelta(days=60)
 
     instrument_names = list(DEFAULT_INSTRUMENTS.keys())
 
@@ -200,12 +182,10 @@ with st.sidebar:
         help="Use this if your instrument is not in the list.",
     ).strip()
 
-    # start_date = st.date_input("Start date (DD/MM/YYYY)", value=default_start)
-    # end_date = st.date_input("End date (DD/MM/YYYY)", value=default_end)
     start_date = st.date_input(
-    "Start date (DD/MM/YYYY)",
-    value=default_start,
-    format="DD/MM/YYYY",
+        "Start date (DD/MM/YYYY)",
+        value=default_start,
+        format="DD/MM/YYYY",
     )
 
     end_date = st.date_input(
@@ -220,9 +200,7 @@ st.write(
     f"**Selected Range:** {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}"
 )
 
-# Final instrument set to process
 instrument_map = {}
-
 for name in selected_instruments:
     instrument_map[name] = DEFAULT_INSTRUMENTS[name]
 
@@ -231,8 +209,8 @@ if custom_symbol:
 
 if calculate:
     try:
-        if start_date >= end_date:
-            st.error("Start date must be earlier than end date.")
+        if start_date > end_date:
+            st.error("Start date must be earlier than or equal to end date.")
             st.stop()
 
         if not instrument_map:
@@ -250,37 +228,22 @@ if calculate:
                 st.warning(f"No data was returned for {instrument_name} in that date range.")
                 continue
 
-            weekly_df = build_monday_to_friday_weeks(daily_df)
+            # Keep only exact selected date range
+            range_df = daily_df[
+                (daily_df.index.date >= start_date) & (daily_df.index.date <= end_date)
+            ].copy()
 
-            if weekly_df.empty:
-                st.warning(f"No completed Monday-Friday weekly candles were found for {instrument_name}.")
+            if range_df.empty:
+                st.warning(f"No trading data found for {instrument_name} in the selected date range.")
                 continue
 
-            weekly_df = weekly_df[
-                (weekly_df.index.date >= start_date) & (weekly_df.index.date <= end_date)
-            ]
+            result = calculate_levels_from_date_range(range_df)
 
-            if len(weekly_df) < 5:
-                st.warning(
-                    f"{instrument_name}: only {len(weekly_df)} completed week(s) found. Choose a larger range with at least 5 completed weeks."
-                )
-                weekly_preview = weekly_df.copy()
-                if not weekly_preview.empty:
-                    weekly_preview.index = weekly_preview.index.strftime("%d/%m/%Y")
-                    st.dataframe(
-                        weekly_preview[["Open", "High", "Low", "Close", "Volume"]],
-                        use_container_width=True,
-                    )
-                continue
-
-            selected_weeks = weekly_df.tail(5)
-            result = calculate_levels_from_5_weeks(selected_weeks)
-
-            # Five points, sorted descending
+            # Five points in descending order
             points = {
                 "Upper Point": result["upper_point"],
                 "Buying Point": result["buying_point"],
-                "Close Used": result["last_week_close"],
+                "Close Used": result["close_used"],
                 "Lower Point": result["lower_point"],
                 "Selling Point": result["selling_point"],
             }
@@ -296,11 +259,11 @@ if calculate:
             left, right = st.columns([1.15, 1])
 
             with left:
-                st.subheader(f"5-week set used for calculation ({instrument_name})")
-                display_weeks = selected_weeks.copy()
-                display_weeks.index = display_weeks.index.strftime("%d/%m/%Y")
+                st.subheader(f"Daily candles used for calculation ({instrument_name})")
+                display_df = range_df.copy()
+                display_df.index = display_df.index.strftime("%d/%m/%Y")
                 st.dataframe(
-                    display_weeks[["Open", "High", "Low", "Close", "Volume"]],
+                    display_df[["Open", "High", "Low", "Close", "Volume"]],
                     use_container_width=True,
                 )
 
@@ -311,37 +274,31 @@ if calculate:
 - **Instrument**: {instrument_name}
 - **Symbol**: `{symbol}`
 - **Range Selected**: {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}
-- **5-week High**: {result['five_week_high']:,}
-- **5-week Low**: {result['five_week_low']:,}
+- **Highest High in Range**: {result['highest_high']:,}
+- **Lowest Low in Range**: {result['lowest_low']:,}
 - **High - Low**: {result['main_number']:,}
 - **Digit reduction**: {result['reduced_digit']}
 - **Derived number**: {result['derived_number']:,}
-- **Last week Close used**: {result['last_week_close']:,}
-- **Last week High**: {result['last_week_high']:,}
-- **Last week Low**: {result['last_week_low']:,}
+- **Close Used**: {result['close_used']:,}
+- **Close Date Used**: {result['close_date_used']}
+- **High of Close Date Candle**: {result['high_used']:,}
+- **Low of Close Date Candle**: {result['low_used']:,}
                     """
                 )
-
-            st.subheader(f"All completed weekly candles in selected range ({instrument_name})")
-            weekly_display = weekly_df.copy()
-            weekly_display.index = weekly_display.index.strftime("%d/%m/%Y")
-            st.dataframe(
-                weekly_display[["Open", "High", "Low", "Close", "Volume"]],
-                use_container_width=True,
-            )
 
         st.divider()
         st.subheader("Formula used")
         st.code(
-            """1. Take the highest High and lowest Low from the 5-week set
-2. main_number = High - Low
-3. Reduce main_number by adding digits repeatedly until one digit remains
-4. derived_number = floor(main_number / reduced_digit)
-5. upper_point   = last_week_close + derived_number
-6. lower_point   = last_week_close - derived_number
-7. buying_point  = last_week_high  - derived_number
-8. selling_point = last_week_low   - derived_number
-9. close_used    = last_week_close""",
+            """1. Take the highest High from all dates in the selected range
+2. Take the lowest Low from all dates in the selected range
+3. main_number = highest_high - lowest_low
+4. Reduce main_number by adding digits repeatedly until one digit remains
+5. derived_number = floor(main_number / reduced_digit)
+6. close_used = close of the end-date trading candle (last available trading day in range)
+7. upper_point   = close_used + derived_number
+8. lower_point   = close_used - derived_number
+9. buying_point  = high_of_close_date_candle - derived_number
+10. selling_point = low_of_close_date_candle - derived_number""",
             language="text",
         )
 
@@ -357,8 +314,9 @@ else:
 - Search and select one or more instruments
 - Optionally enter a custom Yahoo Finance symbol
 - Date display in **DD/MM/YYYY**
-- Weekly candles built as **Monday-Friday**
-- Uses the **last 5 completed weeks**
+- Uses the **exact selected date range**
+- Takes **highest high** and **lowest low** from all dates in the range
+- Uses the **last available trading close** in the range
 - Displays **5 values** in **descending order**:
   - Upper Point
   - Buying Point
