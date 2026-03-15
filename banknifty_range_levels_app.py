@@ -1,11 +1,47 @@
-import math
 from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 
-st.set_page_config(page_title="Bank Nifty 5-Week Levels", layout="wide")
+st.set_page_config(page_title="5-Week Instrument Levels", layout="wide")
+
+
+# -----------------------------
+# Instrument universe
+# -----------------------------
+DEFAULT_INSTRUMENTS = {
+    "Bank Nifty": "^NSEBANK",
+    "Nifty 50": "^NSEI",
+    "FinNifty": "NIFTY_FIN_SERVICE.NS",
+    "Sensex": "^BSESN",
+    "Nifty Next 50": "^NSMIDCP",
+    "Reliance": "RELIANCE.NS",
+    "HDFC Bank": "HDFCBANK.NS",
+    "ICICI Bank": "ICICIBANK.NS",
+    "SBIN": "SBIN.NS",
+    "Infosys": "INFY.NS",
+    "TCS": "TCS.NS",
+    "Axis Bank": "AXISBANK.NS",
+    "Kotak Bank": "KOTAKBANK.NS",
+    "ITC": "ITC.NS",
+    "LT": "LT.NS",
+    "Bharti Airtel": "BHARTIARTL.NS",
+    "HCL Tech": "HCLTECH.NS",
+    "Wipro": "WIPRO.NS",
+    "Maruti": "MARUTI.NS",
+    "Tata Motors": "TATAMOTORS.NS",
+    "Sun Pharma": "SUNPHARMA.NS",
+    "Bajaj Finance": "BAJFINANCE.NS",
+    "Adani Enterprises": "ADANIENT.NS",
+    "Asian Paints": "ASIANPAINT.NS",
+    "Titan": "TITAN.NS",
+    "UltraTech Cement": "ULTRACEMCO.NS",
+    "Power Grid": "POWERGRID.NS",
+    "NTPC": "NTPC.NS",
+    "ONGC": "ONGC.NS",
+    "Coal India": "COALINDIA.NS",
+}
 
 
 # -----------------------------
@@ -38,19 +74,24 @@ def normalize_yf_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def format_date_ddmmyyyy(value) -> str:
+    return pd.to_datetime(value).strftime("%d/%m/%Y")
+
+
 @st.cache_data(ttl=300)
-def fetch_banknifty_daily(start_date: date, end_date: date) -> pd.DataFrame:
+def fetch_instrument_daily(symbol: str, start_date: date, end_date: date) -> pd.DataFrame:
     """
-    Fetch Bank Nifty daily candles from Yahoo Finance.
-    We add a small forward buffer because yfinance end date is exclusive in practice.
+    Fetch daily candles for the selected instrument.
+    yfinance end behaves effectively like exclusive, so add 1 day.
     """
     df = yf.download(
-        "^NSEBANK",
+        symbol,
         start=pd.Timestamp(start_date),
         end=pd.Timestamp(end_date) + pd.Timedelta(days=1),
         interval="1d",
         auto_adjust=False,
         progress=False,
+        multi_level_index=False,
     )
 
     if df.empty:
@@ -69,11 +110,10 @@ def fetch_banknifty_daily(start_date: date, end_date: date) -> pd.DataFrame:
     return df
 
 
-
 def build_monday_to_friday_weeks(daily_df: pd.DataFrame) -> pd.DataFrame:
     """
     Convert daily candles into Monday-Friday trading weeks.
-    W-FRI means: each weekly bar ends on Friday and contains Mon->Fri data.
+    W-FRI means each weekly bar ends on Friday and contains Mon->Fri data.
     """
     weekly = daily_df.resample("W-FRI").agg(
         {
@@ -83,9 +123,14 @@ def build_monday_to_friday_weeks(daily_df: pd.DataFrame) -> pd.DataFrame:
             "Close": "last",
             "Volume": "sum",
         }
-    ).dropna()
-    return weekly
+    )
 
+    # Keep reasonably complete weeks only
+    counts = daily_df["Close"].resample("W-FRI").count()
+    weekly["days_count"] = counts
+    weekly = weekly[weekly["days_count"] >= 4].drop(columns=["days_count"])
+
+    return weekly.dropna()
 
 
 def calculate_levels_from_5_weeks(weekly_5: pd.DataFrame) -> dict:
@@ -128,9 +173,9 @@ def calculate_levels_from_5_weeks(weekly_5: pd.DataFrame) -> dict:
 # -----------------------------
 # UI
 # -----------------------------
-st.title("Bank Nifty 5-Week Range Calculator")
+st.title("5-Week Instrument Range Calculator")
 st.caption(
-    "Pick a date range, fetch live Bank Nifty data, and calculate Upper, Lower, Buying, and Selling points from the last 5 completed weeks inside that range."
+    "Choose an instrument and date range, fetch live data, and calculate Upper, Buying, Close Used, Lower, and Selling points from the last 5 completed weeks inside that range."
 )
 
 with st.sidebar:
@@ -139,17 +184,39 @@ with st.sidebar:
     default_end = today
     default_start = today - timedelta(days=140)
 
-    start_date = st.date_input("Start date", value=default_start)
-    end_date = st.date_input("End date", value=default_end)
+    instrument_names = list(DEFAULT_INSTRUMENTS.keys())
 
-    use_last_5_only = st.checkbox(
-        "Use the last 5 completed weeks inside the selected range",
-        value=True,
-        help="If your selected range contains more than 5 weeks, the app uses the latest 5 completed weeks from that range.",
+    selected_instruments = st.multiselect(
+        "Search or select instrument(s)",
+        options=instrument_names,
+        default=["Bank Nifty"],
+        help="Select one or more instruments from the list.",
     )
+
+    custom_symbol = st.text_input(
+        "Or enter custom Yahoo symbol",
+        value="",
+        placeholder="Example: ^NSEBANK or RELIANCE.NS",
+        help="Use this if your instrument is not in the list.",
+    ).strip()
+
+    start_date = st.date_input("Start date (DD/MM/YYYY)", value=default_start)
+    end_date = st.date_input("End date (DD/MM/YYYY)", value=default_end)
 
     calculate = st.button("Fetch data and calculate", type="primary", use_container_width=True)
 
+st.write(
+    f"**Selected Range:** {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}"
+)
+
+# Final instrument set to process
+instrument_map = {}
+
+for name in selected_instruments:
+    instrument_map[name] = DEFAULT_INSTRUMENTS[name]
+
+if custom_symbol:
+    instrument_map[f"Custom ({custom_symbol})"] = custom_symbol
 
 if calculate:
     try:
@@ -157,58 +224,99 @@ if calculate:
             st.error("Start date must be earlier than end date.")
             st.stop()
 
-        with st.spinner("Fetching live Bank Nifty data..."):
-            daily_df = fetch_banknifty_daily(start_date, end_date)
-
-        if daily_df.empty:
-            st.error("No Bank Nifty data was returned for that date range.")
+        if not instrument_map:
+            st.error("Please select at least one instrument or enter a custom Yahoo symbol.")
             st.stop()
 
-        weekly_df = build_monday_to_friday_weeks(daily_df)
+        for instrument_name, symbol in instrument_map.items():
+            st.divider()
+            st.header(f"{instrument_name}  •  {symbol}")
 
-        if weekly_df.empty:
-            st.error("No completed Monday-Friday weekly candles were found in that range.")
-            st.stop()
+            with st.spinner(f"Fetching live data for {instrument_name}..."):
+                daily_df = fetch_instrument_daily(symbol, start_date, end_date)
 
-        if len(weekly_df) < 5:
-            st.error(
-                f"The selected range only contains {len(weekly_df)} completed week(s). Please choose a larger range with at least 5 completed weeks."
-            )
-            st.dataframe(weekly_df, use_container_width=True)
-            st.stop()
+            if daily_df.empty:
+                st.warning(f"No data was returned for {instrument_name} in that date range.")
+                continue
 
-        selected_weeks = weekly_df.tail(5) if use_last_5_only else weekly_df.tail(5)
-        result = calculate_levels_from_5_weeks(selected_weeks)
+            weekly_df = build_monday_to_friday_weeks(daily_df)
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Upper Point", f"{result['upper_point']:,}")
-        c2.metric("Lower Point", f"{result['lower_point']:,}")
-        c3.metric("Buying Point", f"{result['buying_point']:,}")
-        c4.metric("Selling Point", f"{result['selling_point']:,}")
+            if weekly_df.empty:
+                st.warning(f"No completed Monday-Friday weekly candles were found for {instrument_name}.")
+                continue
 
-        st.divider()
+            weekly_df = weekly_df[
+                (weekly_df.index.date >= start_date) & (weekly_df.index.date <= end_date)
+            ]
 
-        left, right = st.columns([1.1, 1])
+            if len(weekly_df) < 5:
+                st.warning(
+                    f"{instrument_name}: only {len(weekly_df)} completed week(s) found. Choose a larger range with at least 5 completed weeks."
+                )
+                weekly_preview = weekly_df.copy()
+                if not weekly_preview.empty:
+                    weekly_preview.index = weekly_preview.index.strftime("%d/%m/%Y")
+                    st.dataframe(
+                        weekly_preview[["Open", "High", "Low", "Close", "Volume"]],
+                        use_container_width=True,
+                    )
+                continue
 
-        with left:
-            st.subheader("5-week set used for calculation")
-            display_weeks = selected_weeks.copy()
-            display_weeks.index = display_weeks.index.date
-            st.dataframe(display_weeks[["Open", "High", "Low", "Close", "Volume"]], use_container_width=True)
+            selected_weeks = weekly_df.tail(5)
+            result = calculate_levels_from_5_weeks(selected_weeks)
 
-        with right:
-            st.subheader("Calculation details")
-            st.markdown(
-                f"""
+            # Five points, sorted descending
+            points = {
+                "Upper Point": result["upper_point"],
+                "Buying Point": result["buying_point"],
+                "Close Used": result["last_week_close"],
+                "Lower Point": result["lower_point"],
+                "Selling Point": result["selling_point"],
+            }
+            sorted_points = sorted(points.items(), key=lambda x: x[1], reverse=True)
+
+            st.subheader(f"Calculated levels for {instrument_name} (Descending Order)")
+            cols = st.columns(len(sorted_points))
+            for i, (label, value) in enumerate(sorted_points):
+                cols[i].metric(label, f"{value:,}")
+
+            st.divider()
+
+            left, right = st.columns([1.15, 1])
+
+            with left:
+                st.subheader(f"5-week set used for calculation ({instrument_name})")
+                display_weeks = selected_weeks.copy()
+                display_weeks.index = display_weeks.index.strftime("%d/%m/%Y")
+                st.dataframe(
+                    display_weeks[["Open", "High", "Low", "Close", "Volume"]],
+                    use_container_width=True,
+                )
+
+            with right:
+                st.subheader("Calculation details")
+                st.markdown(
+                    f"""
+- **Instrument**: {instrument_name}
+- **Symbol**: `{symbol}`
+- **Range Selected**: {start_date.strftime('%d/%m/%Y')} → {end_date.strftime('%d/%m/%Y')}
 - **5-week High**: {result['five_week_high']:,}
 - **5-week Low**: {result['five_week_low']:,}
 - **High - Low**: {result['main_number']:,}
 - **Digit reduction**: {result['reduced_digit']}
 - **Derived number**: {result['derived_number']:,}
-- **Last week Close**: {result['last_week_close']:,}
+- **Last week Close used**: {result['last_week_close']:,}
 - **Last week High**: {result['last_week_high']:,}
 - **Last week Low**: {result['last_week_low']:,}
-                """
+                    """
+                )
+
+            st.subheader(f"All completed weekly candles in selected range ({instrument_name})")
+            weekly_display = weekly_df.copy()
+            weekly_display.index = weekly_display.index.strftime("%d/%m/%Y")
+            st.dataframe(
+                weekly_display[["Open", "High", "Low", "Close", "Volume"]],
+                use_container_width=True,
             )
 
         st.divider()
@@ -221,31 +329,31 @@ if calculate:
 5. upper_point   = last_week_close + derived_number
 6. lower_point   = last_week_close - derived_number
 7. buying_point  = last_week_high  - derived_number
-8. selling_point = last_week_low   - derived_number""",
+8. selling_point = last_week_low   - derived_number
+9. close_used    = last_week_close""",
             language="text",
         )
 
-        st.subheader("All completed weekly candles in selected range")
-        weekly_display = weekly_df.copy()
-        weekly_display.index = weekly_display.index.date
-        st.dataframe(weekly_display[["Open", "High", "Low", "Close", "Volume"]], use_container_width=True)
-
     except Exception as e:
         st.exception(e)
+
 else:
-    st.info("Choose a date range in the sidebar, then click **Fetch data and calculate**.")
+    st.info("Choose one or more instruments and a date range in the sidebar, then click **Fetch data and calculate**.")
 
     st.markdown(
         """
-### What this app does
-- Fetches **live Bank Nifty** daily data
-- Converts it into **Monday-Friday weekly candles**
-- Uses the **last 5 completed weeks** inside your selected date range
-- Calculates:
-  - **Upper Point**
-  - **Lower Point**
-  - **Buying Point**
-  - **Selling Point**
+### Features
+- Search and select one or more instruments
+- Optionally enter a custom Yahoo Finance symbol
+- Date display in **DD/MM/YYYY**
+- Weekly candles built as **Monday-Friday**
+- Uses the **last 5 completed weeks**
+- Displays **5 values** in **descending order**:
+  - Upper Point
+  - Buying Point
+  - Close Used
+  - Lower Point
+  - Selling Point
         """
     )
 
@@ -255,6 +363,3 @@ else:
 ```bash
 pip install streamlit yfinance pandas
 streamlit run banknifty_range_levels_app.py
-```
-        """
-    )
