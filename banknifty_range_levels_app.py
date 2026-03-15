@@ -200,8 +200,19 @@ with st.sidebar:
         help="Use this if your instrument is not in the list.",
     ).strip()
 
-    start_date = st.date_input("Start date (DD/MM/YYYY)", value=default_start)
-    end_date = st.date_input("End date (DD/MM/YYYY)", value=default_end)
+    # start_date = st.date_input("Start date (DD/MM/YYYY)", value=default_start)
+    # end_date = st.date_input("End date (DD/MM/YYYY)", value=default_end)
+    start_date = st.date_input(
+    "Start date (DD/MM/YYYY)",
+    value=default_start,
+    format="DD/MM/YYYY",
+    )
+
+    end_date = st.date_input(
+        "End date (DD/MM/YYYY)",
+        value=default_end,
+        format="DD/MM/YYYY",
+    )
 
     calculate = st.button("Fetch data and calculate", type="primary", use_container_width=True)
 
