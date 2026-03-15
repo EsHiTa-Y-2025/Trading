@@ -341,25 +341,3 @@ else:
     st.info("Choose one or more instruments and a date range in the sidebar, then click **Fetch data and calculate**.")
 
     st.markdown(
-        """
-### Features
-- Search and select one or more instruments
-- Optionally enter a custom Yahoo Finance symbol
-- Date display in **DD/MM/YYYY**
-- Weekly candles built as **Monday-Friday**
-- Uses the **last 5 completed weeks**
-- Displays **5 values** in **descending order**:
-  - Upper Point
-  - Buying Point
-  - Close Used
-  - Lower Point
-  - Selling Point
-        """
-    )
-
-    st.markdown(
-        """
-### Run locally
-```bash
-pip install streamlit yfinance pandas
-streamlit run banknifty_range_levels_app.py
